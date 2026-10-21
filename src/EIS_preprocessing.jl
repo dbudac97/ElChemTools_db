@@ -1,4 +1,4 @@
-using PyPlot
+
 
 ##
 ##  Notes:
@@ -42,7 +42,7 @@ function EIS_preprocessing_control(;
                                     trim_inductance=false,
                                     subtract_inductance_fac=0.0,
                                     leave_only_inductance_points=Nothing,
-                                    outlayers_threshold=1.5,                                    
+                                    outlayers_threshold=Inf,
                                     use_DRT=false, DRT_control=DRT_control_struct(),
                                     DAN_prepro=false,
                                     #
@@ -154,7 +154,7 @@ function f_interval_auto_processing(EIS_df, trim_inductance=false, leave_only_in
     println("ERROR: lowest_freq_idx not found!")
     
     lowest_freq_idx=1
-    #return throw(Exception)
+    #return throw(ArgumentError("invalid input; see preceding message"))
   end
   
   # intersection with x axis
@@ -244,6 +244,8 @@ end
 function dropping_really_bad_points(EIS_df, EIS_preprocessing_control)
   average_Z_difference = get_average_Z_difference(EIS_df.Z)
   threshold = EIS_preprocessing_control.outlayers_threshold
+  threshold > 0 || throw(ArgumentError("outlier threshold must be positive"))
+  nrow(EIS_df) < 3 && return EIS_df
   frequency_blacklist = []
   
   pyplot = EIS_preprocessing_control.debug_plot
@@ -317,6 +319,7 @@ end
 
 function subtract_inductance!(EIS_df, EIS_preprocessing_control)
   if EIS_preprocessing_control.subtract_inductance_fac > 0
+    EIS_preprocessing_control.DRT_control.alg == "Gold" && throw(ArgumentError("Gold does not estimate inductance; use Tikhonov for subtraction"))
     DRT_actual = get_DRT(EIS_df, EIS_preprocessing_control.DRT_control)
     L = DRT_actual.L*EIS_preprocessing_control.subtract_inductance_fac
     
@@ -372,7 +375,8 @@ end
 
 
 function EIS_preprocessing(EIS_df, EIS_preprocessing_control::EIS_preprocessing_control)            
-    new_EIS_df = deepcopy(EIS_df)
+    validate_eis(EIS_df)
+    new_EIS_df = sort(deepcopy(EIS_df), :f)
 
     subtract_inductance!(new_EIS_df, EIS_preprocessing_control)
     
@@ -383,7 +387,9 @@ function EIS_preprocessing(EIS_df, EIS_preprocessing_control::EIS_preprocessing_
     #dropping_specified_points!(new_EIS_df, EIS_preprocessing_control)         --->> IMPORTANT
     #
     #assesing_chaos(new_EIS) #    ----> if there is even any useful piece of information?
-    new_EIS_df = dropping_really_bad_points(new_EIS_df, EIS_preprocessing_control)      # TODO ->>> implement filtering whole segments out     
+    if isfinite(EIS_preprocessing_control.outlayers_threshold)
+      new_EIS_df = dropping_really_bad_points(new_EIS_df, EIS_preprocessing_control)
+    end #      # TODO ->>> implement filtering whole segments out
     #
     new_EIS_df = convolution(new_EIS_df, EIS_preprocessing_control)
     #

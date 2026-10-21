@@ -1,12 +1,3 @@
-# using Printf
-
-const kB = 1.3806488e-23
-const N_A = 6.02214129e23
-const R = kB*N_A
-const e0 = 1.602176565e-19
-const eV = e0
-
-
 mutable struct prms_struct
   names
   values
@@ -33,14 +24,14 @@ function consistency_check(prms::prms_struct)
   
   if size(prms.names,1) != size(prms.values,1)
     println("ERROR: consistency_check: shape mismatch size(prms.names,1) != size(prms.values,1) >>>> $(size(prms.names,1)) != $(size(prms.values,1)) ")
-    return throw(Exception)
+    return throw(ArgumentError("invalid input; see preceding message"))
   end
   
   for i in 1:size(prms.values,1)
     if typeof(prms.values[i]) != Colon
       if size(prms.values[i],1) < 1
         println("ERROR: consistency_check: empty_field prms.values[$i]")
-        return throw(Exception)
+        return throw(ArgumentError("invalid input; see preceding message"))
       end
     end
   end
@@ -89,7 +80,7 @@ function check_equal_size(list_1, list_2)
     return true
   else
     println("ERROR: check_equal_size: shape mismatch $(list_1) and $(list_2)")
-    return throw(Exception)
+    return throw(ArgumentError("invalid input; see preceding message"))
   end
 end
 
@@ -138,55 +129,6 @@ function printfields(this)
     end
 end
 
-function convert_prms_values_to_LaTeX_format(;
-  prms_names=["A.exp", "R.exp", "O.exp", "A.r", "R.r", "O.r", "A.DG", "R.DG", "O.DG", "DD", "nu", "OC", "ms_par", "e_fac"],
-  prms_values,
-  prms_names_output=["kin", "A.r", "R.r", "O.r", "A.DG", "R.DG", "O.DG", "OC", "ms_par", "e_fac"])
-  
-  function etk(exp_string)
-    exp_id = findall(x -> x==exp_string, prms_names)
-    
-    return Bool(prms_values[exp_id]...) ? "E" : "L"
-  end
-  
-  found_item = false
-  output_string = ""
-  for name_out in prms_names_output
-    found_item = false
-    for (i, name_in) in enumerate(prms_names)
-      if name_out == name_in
-        output_string *= "$(@sprintf("%.3f",prms_values[i])) & "
-        found_item = true
-        break
-      end
-    end
-    if name_out == "kin"
-      output_string *= "$(etk("A.exp"))$(etk("R.exp"))$(etk("O.exp")) & "
-      found_item = true
-    end
-    
-    if !found_item
-      println("ERROR: name_out $(name_out) not found!")
-      throw(Exception)
-    end
-  end
-  if output_string == ""
-    return output_string
-  else
-    return output_string[1:end-3]
-  end
-end
-
-
-# Temperature parametrization
-# function Arrhenius_template(T, E, p)
-#   return p*exp(-E/(1.380649e-23 * T))
-# end
-
-function quadratic_template(T, A, B, C)
-  return A*((T-973.15)/50)^2 + B*((T-973.15)/50) + C
-end
-
 function exponential_interpolation(x, a, b, A, B)
   E = log(A/B)/(a-b)
   C = A/exp(E*a)
@@ -194,6 +136,8 @@ function exponential_interpolation(x, a, b, A, B)
 end
 
 function EIS_get_checknodes_geometrical(start_n, end_n, n_fac)
+    all(isfinite,(start_n,end_n,n_fac)) && start_n > 0 && end_n >= start_n && n_fac > 1 ||
+        throw(ArgumentError("frequency limits must be positive and finite, with growth factor > 1"))
     # frequency nodes to compare
     # must be sorted upwards
     w_list = zeros(0)
@@ -204,7 +148,7 @@ function EIS_get_checknodes_geometrical(start_n, end_n, n_fac)
     end
     if n_fac <= 1 || start_n > end_n
         println("ERROR: get_checknodes: n_fac <= 1 || start_n > end_n")
-        return throw(Exception)
+        return throw(ArgumentError("invalid input; see preceding message"))
     end
     while w < end_n
         append!(w_list, w)
@@ -240,7 +184,7 @@ function fit_func_prms(xdata, ydata, func;
 
   if length(xdata) != length(ydata)
       println("ERROR: length(xdata) != length(ydata), $(length(xdata)) != $(length(ydata))")
-      return throw(Exception)
+      return throw(ArgumentError("invalid input; see preceding message"))
   end
   if typeof(initial_prms) == Nothing
       initial_prms = zeros(n_p)
@@ -270,7 +214,7 @@ function fit_func_prms(xdata, ydata, func;
 
   if !in_bounds(initial_prms)
       println("ERROR: initial_prms $(initial_prms) not in bounds $(boundary_prms)")
-      return throw(Exception)
+      return throw(ArgumentError("invalid input; see preceding message"))
   end
   
   function to_optimize(p)

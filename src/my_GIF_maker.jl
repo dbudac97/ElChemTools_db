@@ -50,8 +50,8 @@ function make_GIF(gif_maker_control=gif_maker_control() )
       auto_xlim[1] = min(gif_maker_control.x_ranges[seq_idx]... , auto_xlim[1])
       auto_xlim[2] = max(gif_maker_control.x_ranges[seq_idx]... , auto_xlim[2])
       #
-      auto_ylim[1] = min(gif_maker_control.y_ranges[seq_idx]... , auto_xlim[1])
-      auto_ylim[2] = max(gif_maker_control.y_ranges[seq_idx]... , auto_xlim[2])      
+      auto_ylim[1] = min(gif_maker_control.y_ranges[seq_idx]... , auto_ylim[1])
+      auto_ylim[2] = max(gif_maker_control.y_ranges[seq_idx]... , auto_ylim[2])
     end    
   else
     auto_xlim = gif_maker_control.xlim
@@ -130,7 +130,7 @@ function plot_2D_sequence_in_3D(x_ranges, y_ranges; graph_3D_control=graph_3D_co
   end
   if sequence_length != length(y_ranges)
     println("ERROR: length(x_ranges) != length(y_ranges): ", length(x_ranges) , " != ",  length(y_ranges))
-    return throw(Exception)
+    return throw(ArgumentError("invalid input; see preceding message"))
   end
   
   color_controlled = false
@@ -159,7 +159,7 @@ function plot_2D_sequence_in_3D(x_ranges, y_ranges; graph_3D_control=graph_3D_co
     for i in 1 : x_z_idx_length 
       if x_z_idx_length != length(y_ranges[z_idx])
         println("ERROR: length(x_ranges[z_idx]) != length(y_ranges[z_idx]): ", length(x_ranges[z_idx]) , " != ",  length(y_ranges[z_idx]), " ... z_idx = ",z_idx)
-        return throw(Exception)     
+        return throw(ArgumentError("invalid input; see preceding message"))
       end
       y_data = x_ranges[z_idx]
       z_data = y_ranges[z_idx]
