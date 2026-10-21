@@ -1,3 +1,4 @@
+using Optim, Random
 # using Printf
 
 const kB = 1.3806488e-23

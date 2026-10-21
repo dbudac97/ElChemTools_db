@@ -1,48 +1,42 @@
-# ElChemTools
+# GPNPTPB — gPNP model of the LSM|YSZ interface
 
-A toolkit for processing electrochemistry data or running FVM simulations using custom implemented models. In particular, it offers
-- preprocessing of EIS (Electrochemical Impedance Spectroscopy) data
-- viewing of EIS response to EEC (Electrical Equivalent Circuit) consisting of serial combination of
-  - R resistance
-  - C capacitance
-  - L inductance
-  - RC
-  - RCPE resistor with constant phase element in paralel
-- fitting the EIS data to a predefined EEC structure using Nelder-Mead simplex optimisation method
-- DRT (Distribution of Relaxation Times) analysis of EIS data
-- implementation of a custom model using definition of 
-  - storage term
-  - flux term
-  - reaction term
-  - source term
-- numerical simulation (using the defined model) of 
-  - EIS (using linearization and Fourier transformation), 
-  - CV (Cyclic Voltammetry)
-  - differential capacitance measurement of a blocking electrode regime
-  - ... more custom made experiments
-- running large numerical parametric studies using personal notebook or a computional cluster
-  
-## Instalation
+Independent Julia project extracted from ElChemTools. It contains the physical YSZ transport,
+space-charge and surface reaction models and the EIS/CV numerical experiment driver.
+Generic impedance analysis and preprocessing belong in **ElChemTools**.
 
-If you do not have a python installed on you system and you want julia to take care of it (and install its own python), write
-```julialang
-ENV["PYTHON"] = ""
-```
-prior to the adding the package. Then the package can be then installed via
-```julialang
-]
-add https://github.com/Masicko/ElChemTools.jl
+The numerical model equations and time-domain solver are preserved byte for byte from
+`dbudac97/ElChemTools_db@e47fdf753be44a09de29b10b73360a82ecf97e16`.
+They have not been repaired or physically revalidated as part of the extraction.
+Original MIT license and authorship are retained. This is a model-development baseline.
+
+## Entry points
+
+```julia
+using GPNPTPB
+# These can be expensive; set the physical parameters for your intended experiment first.
+# eis = simulate_eis(TC=800, pO2=100, bias=0.0,
+#     prms_names_in=["A.r_C"], prms_values_in=[24.0])
+# cv = simulate_cv(TC=800, pO2=100, voltrate=0.01)
 ```
 
-## Usage
+`simulate_eis` and `simulate_cv` take temperature in °C and nominal O2 fraction in percent at
+1 bar total pressure. As in the historical wrapper, nominal zero is regularized to 10⁻⁷ bar.
+`run_experiment` exposes the historical driver: T is kelvin and pO2 follows its bar convention.
+The active model modules are exported as `TemperatureModel` and `GenericModel`.
 
-A user guide for every feature is documented in `./examples/` folder, e.g. `./examples/EEC_usage.jl`.
+## Status
 
-## Acknowledgement
+- Active: `ysz_model_GAS_LoMA_Temperature`, `ysz_model_GAS_LoMA_generic`.
+- The ARO file is a fully commented historical design, not an active module.
+- EIS, CV, steady I-V and analytical capacitance code are retained. Numerical correctness
+  and compatibility with current dependencies still need dedicated model validation.
+- STEP / chronoamperometry is not implemented; the old driver contains a placeholder.
+- Generic-model potential coupling still uses a hard-coded mesh node. This needs repair
+  before mesh or geometry studies.
+- Legacy fitting, CV/CAP descriptors and parameter-study scripts are retained in `legacy/`.
+  They are not imported by GPNPTPB and still require migration to the independent APIs.
+- `legacy/Project.toml` and `legacy/Manifest.toml` preserve the original combined environment
+  as provenance, not as a second active ElChemTools installation.
 
-This work was supported by the German Research Foundation, DFG project no. FU 316/14-1, and by the Czech Science Foundation, GAČR project no. 19-14244J.
-
-
-
-
-
+There is no dependency on ElChemTools. Export generated EIS as f,ReZ,ImZ CSV and analyze it
+there. Model fitting across EIS/CV and future chronoamperometry remains work for this project.

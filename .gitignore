@@ -29,3 +29,5 @@ snehurka/individual_files
 
 custom_import_experimental_data.jl
 data/*
+/Manifest.toml
+/test/Manifest.toml
