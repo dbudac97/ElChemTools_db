@@ -1,5 +1,5 @@
 using Printf
-using PyPlot
+
 #using Plots
 using DataFrames
 #using LeastSquaresOptim
@@ -42,11 +42,11 @@ mutable struct EEC_data_struct
   structure::String
   #Z::Function # Z(omega, prms)::Complex
   prms_names::Array{String}
-  prms_values::Array{Float32}
+  prms_values::Array{Float64}
   #
-  standard_deviations::Array{Float32}
-  lower_limits_for_fitting::Array{Float32}
-  upper_limits_for_fitting::Array{Float32}
+  standard_deviations::Array{Float64}
+  lower_limits_for_fitting::Array{Float64}
+  upper_limits_for_fitting::Array{Float64}
   #
   EEC_data_struct() = new()
 end
@@ -98,14 +98,19 @@ function get_EEC(EEC_structure)
         append!(prms_names, ["R$(i)", "L$(i)"])
       else
         println("ERROR: build_EEC: Incorrect input of EEC_structure $(EEC_structure)")
-        throw(Exception)
+        throw(ArgumentError("invalid input; see preceding message"))
       end
     end  
     
     append!(prms_names, ["Err"])
     EEC_actual.prms_names = prms_names
   end
-  return  EEC_actual
+  n=length(EEC_actual.prms_names)
+  EEC_actual.prms_values=zeros(n)
+  EEC_actual.standard_deviations=fill(NaN,n)
+  EEC_actual.lower_limits_for_fitting=fill(-Inf,n)
+  EEC_actual.upper_limits_for_fitting=fill(Inf,n)
+  return EEC_actual
 end
 
 function g(EEC::EEC_data_struct, name::String)
@@ -139,7 +144,7 @@ function evaluate_EEC(EEC::EEC_data_struct, omega)
       total_Z += im*omega* g(EEC, "L$(i)") * g(EEC, "R$(i)")       /( g(EEC, "R$(i)") + im * omega* g(EEC, "L$(i)") )
     else
       println("ERROR: evaluate_EEC: Incorrect input of EEC_structure $(EEC_structure)")
-      throw(Exception)
+      throw(ArgumentError("invalid input; see preceding message"))
     end
   end
   return total_Z
@@ -224,263 +229,111 @@ end
 #
 #     mask can be generated via string input, e.g. every "L" should be constant >>
 #
-function EEC_find_fit!(EEC_actual::EEC_data_struct, EIS_exp::DataFrame; mask=Nothing, alpha_low=0.0, alpha_upp=1.0, with_errors=false, error_type)
-  
-  projection_plot_maximum = 0.0002
-  projection_plot_minimum = 10
-  
-  function EEC_plot_error_projection(prms_values, prms_names, error)
-    fig_num = 333
-    prms_length = length(prms_names)
-    plot_edge = ceil(sqrt(prms_length))
-
-    if projection_plot_maximum < error && error < 20
-      projection_plot_maximum = error
-    end
-    
-    if error < projection_plot_minimum
-      projection_plot_minimum = error
-    end
-    
-    figure(fig_num)
-    for i in 1:prms_length
-      subplot(plot_edge, plot_edge, i)
-      xlabel(prms_names[i])
-      ylabel("err")
-      ylim(projection_plot_minimum, projection_plot_maximum)
-      plot(prms_values[i], error, "o")
-    end
-    
+function EEC_find_fit!(eec::EEC_data_struct, data::DataFrame; mask=Nothing, alpha_low=0.0, alpha_upp=1.0, with_errors=false, error_type="normalized")
+  validate_eis(data)
+  if eec.structure == "R+Rpol"
+    sorted=sort(data,:f)
+    eec.prms_values=[real(sorted.Z[end]),real(sorted.Z[1]-sorted.Z[end])]
+    eec.standard_deviations=fill(NaN,2)
     return
   end
-  
-  function prepare_prms(mask, x0, x)
-      prms = zeros(0)
-      xi = 1
-      for i in collect(1 : 1 :length(mask))
-          if convert(Bool,mask[i])
-              append!(prms, x[xi])
-              xi += 1
-          else
-              append!(prms, x0[i])
-          end
-      end
-      return prms
-  end
-  
-  function prepare_masked_stuff(mask, x0, lower_bounds, upper_bounds)
-    x0M = zeros(0)
-    lowM = zeros(0)
-    uppM = zeros(0)
-    for i in collect(1 : 1 : length(mask))
-        if convert(Bool,mask[i])
-            append!(x0M, x0[i])
-            append!(lowM, lower_bounds[i])
-            append!(uppM, upper_bounds[i])
-        end
+  n=length(eec.prms_names)
+  length(eec.prms_values)==n || throw(ArgumentError("parameter length mismatch"))
+  active = mask == Nothing ? trues(n) : Bool.(mask)
+  length(active)==n || throw(ArgumentError("mask length mismatch"))
+  active[findall(==("Err"),eec.prms_names)].=false
+  ids=findall(active)
+  x0=copy(eec.prms_values)
+  lower=copy(eec.lower_limits_for_fitting); upper=copy(eec.upper_limits_for_fitting)
+  for (i,name) in enumerate(eec.prms_names)
+    if name == "Err"
+      continue
+    elseif startswith(name,"alpha")
+      lower[i]=max(lower[i],alpha_low); upper[i]=min(upper[i],alpha_upp)
+    else
+      lower[i]=max(lower[i],0.0)
     end
-    return x0M, lowM, uppM
-  end
-  
-  function get_EIS_value_from_gf(EIS_df, gf_list)
-    output = []
-    for gf in gf_list
-      if mod(gf,2) == 0
-        append!(output, real(EIS_df.Z[div(gf,2)]))
-      else
-        append!(output, imag(EIS_df.Z[div(gf,2)]))
-      end
+    lower[i] <= x0[i] <= upper[i] || throw(ArgumentError("initial/fixed value for $name is outside bounds"))
+    if active[i] && lower[i] == upper[i]
+      throw(ArgumentError("equal bounds for $name; fix the parameter instead"))
     end
-    return output
   end
-
-  function get_R_Rpol_prms(EIS_data)
-    high_R = real(EIS_data.Z[end])
-    low_R = real(EIS_data.Z[1])
-    return [high_R, low_R - high_R]
-  end
-
-  if EEC_actual.structure == "R+Rpol"
-    EEC_actual.prms_values = get_R_Rpol_prms(EIS_exp)
+  eec.standard_deviations=fill(NaN,n)
+  if isempty(ids)
+    erridx=findfirst(==("Err"),eec.prms_names)
+    erridx === nothing || (eec.prms_values[erridx]=fitnessFunction(EIS_simulation(),get_EIS_from_EEC(eec;f_range=data.f),data;error_type))
     return
   end
-
-  x_previous = Nothing
-  dramatic_tolerance = 1.0e-4
-  function check_dramatic_change(x)
-    for (i, item) in enumerate(x)
-      if abs(x[i] - x_previous[i]) > dramatic_tolerance
-        return true
-      end
-    end
-    return false
+  scales=[max(abs(x0[i]), startswith(eec.prms_names[i],"C") ? 1e-3 : 1.0) for i in ids]
+  function assign!(y)
+    eec.prms_values=copy(x0)
+    eec.prms_values[ids]=y.*scales
   end
-  
-  function to_optimize(x)    
-    
-    EEC_actual.prms_values = prepare_prms(mask, x0, x)
-    EIS_EEC = get_EIS_from_EEC(EEC_actual, f_range=EIS_exp.f)        
-    
-    err = fitnessFunction(SIM, EIS_EEC, EIS_exp, error_type=error_type)
-    
-    
-    
-#     ################### 
-#     #pause(0.1)
-#     
-#     EIS_EEC_plot = get_EIS_from_EEC(EEC_actual, f_range=EIS_get_checknodes_geometrical((1, 10000, 1.4)...))
-#     if check_dramatic_change(x) || true
-#       #typical_plot_sim(SIM, EIS_EEC_plot)
-#     end
-#     
-#     #PyPlot.show()
-#     
-#       
-#     EEC_plot_error_projection(
-#       take_only_masked(mask, EEC_actual.prms_values), 
-#       take_only_masked(mask, EEC_actual.prms_names), 
-#       err)
-#     
-#      println("~~~~~ LM e = $(err)\nx = $(x)")
-#     ##################
-#     
-#     
-#     if !(check_x_in(x, lowM, uppM))
-# #       ##############
-#        @show x
-#        @show lowM
-#        @show uppM
-#        println("    OUT OF THE BOUNDS   \n")
-# #       ##############
-# #       return 1000
-#     end
-    
-    
-    return err
+  function objective(y)
+    x=y.*scales
+    all((lower[ids].<=x).&(x.<=upper[ids])) || return Inf
+    assign!(y)
+    simulated=get_EIS_from_EEC(eec;f_range=data.f)
+    all(isfinite,simulated.Z) || return Inf
+    fitnessFunction(EIS_simulation(),simulated,data;error_type)
   end
-  
-  function model(gf, x)    
-    EEC_actual.prms_values = prepare_prms(mask, x0, x)
-    EIS_EEC = get_EIS_from_EEC(EEC_actual, f_range=EIS_exp.f)
-    SIM = EIS_simulation(800, 100, 0, use_DRT=false, plot_option="Bode Nyq", plot_legend=false)[1]
-    #typical_plot_sim(SIM, EIS_EEC)
-    #println("e = $(fitnessFunction(SIM, EIS_EEC, EIS_exp, error_type=error_type))\nx = $(x)")
-    return get_EIS_value_from_gf(EIS_EEC, gf)
-  end  
-  
-  SIM = EIS_simulation(800, 100, 0, use_DRT=false, plot_option="Bode Nyq", plot_legend=false)[1]
-  
-  prms_length = length(EEC_actual.prms_values)
-  if mask == Nothing
-    mask = Array{Int16}(undef, prms_length)
-    mask .= 1
-  end
-  
-  
-  x0 = copy(EEC_actual.prms_values)
-  
-  lower_bounds = Array{Float32}(undef, prms_length)
-  upper_bounds = Array{Float32}(undef, prms_length)
-  lower_bounds_threshold = 1e-11
-  for (i, name) in enumerate(EEC_actual.prms_names)
-      if occursin("alpha", name)
-        lower_bounds[i] = max(alpha_low, lower_bounds_threshold)
-        upper_bounds[i] = alpha_upp
-      else
-        lower_bounds[i] = lower_bounds_threshold
-        upper_bounds[i] = Inf
-      end
-  end
-  for (i, name) in enumerate(EEC_actual.prms_names)
-    lower_bounds[i] = max(lower_bounds[i], EEC_actual.lower_limits_for_fitting[i])
-    upper_bounds[i] = min(upper_bounds[i], EEC_actual.upper_limits_for_fitting[i])
-  end
-
-  
-  #######################################
-  #######################################
-  #######################################
-  #######################################
-  x0M, lowM, uppM = prepare_masked_stuff(mask, x0, lower_bounds, upper_bounds)
-  #@show lowM
-  #@show uppM  
- 
-  x_previous = x0M
- 
-  begin # LeastSquaresOptim
-#   fit_LSO = optimize(to_optimize, x0M, lower=lowM, upper=uppM, 
-#     #Δ=1000000, 
-#     x_tol=1.0e-14,
-#     f_tol=1.0e-14, 
-#     g_tol=1.0e-14, 
-#     #autodiff=:central,
-#     LevenbergMarquardt(),
-#     #Dogleg(),
-#     )
-  end
- 
   if with_errors
-    begin # LsqFit
-      gf_range = collect( 2 : 1 : 1 + 2*length(EIS_exp.f))
-      y_data = get_EIS_value_from_gf(EIS_exp, gf_range)   
-      fit = curve_fit(model, gf_range, y_data, x0M, lower=lowM, upper=uppM)
-      EEC_actual.prms_values = prepare_prms(mask, x0, fit.param)
+    error_type in ("relative","normalized") || throw(ArgumentError("unknown error type"))
+    weights=error_type=="relative" ? max.(abs.(data.Z), max(maximum(abs.(data.Z))*1e-12,eps())) : ones(nrow(data))
+    target=vcat(real.(data.Z)./weights,imag.(data.Z)./weights)
+    function model(_,y)
+      assign!(y)
+      z=get_EIS_from_EEC(eec;f_range=data.f).Z
+      vcat(real.(z)./weights,imag.(z)./weights)
+    end
+    fit=LsqFit.curve_fit(model,collect(1:length(target)),target,x0[ids]./scales;
+                        lower=lower[ids]./scales,upper=upper[ids]./scales)
+    assign!(fit.param)
+    # Undefined covariance is represented as NaN, never as fitted parameter values.
+    try
+      if rank(fit.jacobian)==length(ids) && length(target)>length(ids)
+        eec.standard_deviations[ids]=LsqFit.stderror(fit).*scales
+      end
+    catch err
+      err isa InterruptException && rethrow()
     end  
   else
-    begin # Optim
-      fit_O = optimize(to_optimize, x0M, #lower=lowM, upper=uppM, 
-        #Δ=1000000, 
-        #x_tol=1.0e-18,
-        #f_tol=1.0e-18,
-        #g_tol=1.0e-18,
-        #autodiff=:central,
-        Optim.Options(iterations = 2000, f_tol=1.0e-18, g_tol=1.0e-21),
-        #Optim.NelderMead(
-        #  initial_simplex = Optim.AffineSimplexer()        
-        #)
-        #LevenbergMarquardt(),                
-        #Dogleg(),
-      )
-      EEC_actual.prms_values = prepare_prms(mask, x0, fit_O.minimizer)  
+    lo=lower[ids]./scales; hi=upper[ids]./scales
+    start=x0[ids]./scales
+    function decode(y)
+      [if isfinite(lo[j]) && isfinite(hi[j])
+          q=y[j]>=0 ? 1/(1+exp(-y[j])) : exp(y[j])/(1+exp(y[j]))
+          lo[j]+(hi[j]-lo[j])*q
+        elseif isfinite(lo[j])
+          lo[j]+exp(y[j])
+        elseif isfinite(hi[j])
+          hi[j]-exp(y[j])
+        else
+          y[j]
+        end for j in eachindex(y)]
     end
+    latent=[if isfinite(lo[j]) && isfinite(hi[j])
+        q=clamp((start[j]-lo[j])/(hi[j]-lo[j]),0.01,0.99)
+        log(q/(1-q))
+      elseif isfinite(lo[j])
+        log(max(start[j]-lo[j],1e-3))
+      elseif isfinite(hi[j])
+        log(max(hi[j]-start[j],1e-3))
+      else
+        start[j]
+      end for j in eachindex(start)]
+    result=Optim.optimize(y -> objective(decode(y))^2,latent,Optim.NelderMead(),
+      Optim.Options(iterations=4000,f_abstol=1e-18,f_reltol=1e-10,g_abstol=1e-16,x_reltol=1e-8))
+    isfinite(Optim.minimum(result)) || throw(ErrorException("no finite EEC fit within bounds"))
+    assign!(decode(Optim.minimizer(result)))
+    Optim.converged(result) || @warn "EEC optimizer reached its iteration limit"
   end
-
-  
-  
-  #@show fit_O
-  
-  
-  error0 = deepcopy(x0)
-  error0 .= -Inf;
-  try
-    EEC_actual.standard_deviations = prepare_prms(mask, error0, stderror(fit))
-  catch
-    #println("SO EIN PECH!")
-    EEC_actual.standard_deviations = deepcopy(EEC_actual.prms_values)
+  erridx=findfirst(==("Err"),eec.prms_names)
+  if erridx !== nothing
+    eec.prms_values[erridx]=fitnessFunction(EIS_simulation(),get_EIS_from_EEC(eec;f_range=data.f),data;error_type)
   end
-  return
+  nothing
 end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 function get_left_right_width_of_EIS(EIS_df, N_for_sum=2)
   real_sum_left = 0
@@ -519,14 +372,17 @@ function get_init_values(EIS_exp, EEC::EEC_data_struct)
   capacitance_spread_factor = 7/8
   
   # R | L | RCPE | RCPE structure REQUIERED!
-  output = Array{Float64}(undef, length(EEC.prms_names))
+  output = zeros(Float64, length(EEC.prms_names))
   
   # resistors
   left, right, width = get_left_right_width_of_EIS(EIS_exp)
   
+  if !(EEC.structure == "R-L-RC" || occursin(r"^R-L(?:-RCPE)+(?:-C)?$", EEC.structure))
+    throw(ArgumentError("automatic initial guesses support R-L-RC or R-L-RCPE[-RCPE...][-C]; use fit_eec with explicit initial for other circuits"))
+  end
   minimum = Inf
   minimum_idx = -1
-  for (i, item) in enumerate(imag(EIS_exp.Z))
+  for (i, item) in enumerate(imag.(EIS_exp.Z))
     if item < minimum
       minimum = item
       minimum_idx = i
@@ -602,8 +458,8 @@ function get_init_values(EIS_exp, EEC::EEC_data_struct)
     end
     
     # C
-    if length(output)==2 + 3*RCPE_count + 1
-      output[2 + 3*RCPE_count + 1] = max(0, -1/(2*pi*EIS_exp.f[1]*imag(EIS_exp.Z[1])))
+    if last(split(EEC.structure,"-")) == "C"
+      output[end-1] = max(0, -1/(2*pi*EIS_exp.f[1]*imag(EIS_exp.Z[1])))
     end
   end
   
@@ -620,12 +476,12 @@ function set_fitting_limits_to_EEC_from_EIS_exp!(EEC::EEC_data_struct, EIS_exp)
   left, right, width = get_left_right_width_of_EIS(EIS_exp)
     
   prms_length = length(EEC.prms_names)
-  lower_limits = Array{Float32}(undef, prms_length)
-  upper_limits = Array{Float32}(undef, prms_length)
+  lower_limits = fill(-Inf,prms_length)
+  upper_limits = fill(Inf,prms_length)
   
   # R-L-RC structure
   if EEC.structure == "R-L-RC"
-    lower_limits .= Inf
+    lower_limits .= -Inf
     upper_limits .= Inf
   else
     
@@ -681,14 +537,16 @@ end
 
 
 function view_EEC(;
-      EEC_structure="RL-R-L-RCPE-RCPE", 
-      prms_values=[1, 0.001,      1.7, 0,        1. , 0.001, 1.0,    1.0, 0.01, 0.8], 
+      EEC_structure="R-L-RCPE-RCPE",
+      prms_values=[1.7, 0, 1.0, 0.001, 1.0, 1.0, 0.01, 0.8, 0.0],
       f_range=(0.01, 10000, 1.2),
       print_bool=false, pyplot=1, plot_legend=true, use_DRT=true, DRT_draw_semicircles=false,
       )
   
   EEC = get_EEC(EEC_structure)
-  
+  if last(EEC.prms_names)=="Err" && length(prms_values)==length(EEC.prms_names)-1
+    prms_values=vcat(collect(prms_values),0.0)
+  end
   function recursive_view_EEC_call(output_prms, plot_names, plot_values, active_idx)
       if active_idx > size(prms_names,1)
 
@@ -816,7 +674,7 @@ end
 
 function run_EEC_fitting(;
                         # dataset
-                        TC=800, pO2=80, bias=0.0, data_set="MONO_110",
+                        TC=800, pO2=80, bias=0.0, data_set="",
                         EIS_input=Nothing,
                         f_interval=Nothing, succes_fit_threshold = 0.002, error_type="normalized",
                         fixed_prms_names=[], fixed_prms_values=[],
@@ -886,7 +744,7 @@ function run_EEC_fitting(;
   function get_fitting_mask_and_apply_fixed_prms_values!(EEC, init_values_list, fixed_prms_names, fixed_prms_values)
     if length(fixed_prms_names) != length(fixed_prms_values)
       println("ERROR: length(fixed_prms_names) != length(fixed_prms_values) ==>> $(length(fixed_prms_names)) != $(length(fixed_prms_values))")
-      return throw(Exception)
+      return throw(ArgumentError("invalid input; see preceding message"))
     else
       output = []
       skip_bool = false
@@ -907,7 +765,7 @@ function run_EEC_fitting(;
       
       if length(fixed_prms_names) + sum(output) != length(EEC.prms_names)
         println("ERROR: some of fixed_prms_names $(fixed_prms_names) not found in $(EEC.prms_names)!")
-        return throw(Exception)
+        return throw(ArgumentError("invalid input; see preceding message"))
       end
       #@show output
       return output
@@ -915,7 +773,13 @@ function run_EEC_fitting(;
   end
   
   EEC_actual = get_EEC(EEC_structure)
-      
+  EIS_preprocessing_control=deepcopy(EIS_preprocessing_control)
+  f_interval==Nothing || (EIS_preprocessing_control.f_interval=f_interval)
+  if trim_inductance
+    EIS_preprocessing_control.trim_inductance=true
+    EIS_preprocessing_control.f_interval==Nothing && (EIS_preprocessing_control.f_interval="auto")
+  end
+
   data_set = make_array_from_string(data_set)  
   EEC_data_holder = EEC_data_holder_struct(TC, pO2, bias, data_set, EEC_actual.prms_names)
   
@@ -992,6 +856,7 @@ function run_EEC_fitting(;
     
     
     EIS_exp = EIS_preprocessing(EIS_exp, EIS_preprocessing_control)
+    nrow(EIS_exp)>=3 || throw(ArgumentError("at least three EIS points required for batch fitting"))
 
 ## HERE
     set_fitting_limits_to_EEC_from_EIS_exp!(EEC_actual, EIS_exp)
@@ -1032,6 +897,7 @@ function run_EEC_fitting(;
             
     best_error = Inf
     best_prms_values = []
+    best_standard_deviations = []
     best_init_values_idx = -1
     
     
@@ -1046,7 +912,7 @@ function run_EEC_fitting(;
         EEC_find_fit!(EEC_actual, EIS_exp, mask=mask, alpha_low=alpha_low, alpha_upp=alpha_upp, with_errors=with_errors, error_type=error_type)
         
         
-        HF_LF_correction!(EEC_actual)        
+        # Keep named block identities, especially fixed parameters.
         
         EIS_EEC = get_EIS_from_EEC(EEC_actual, f_range=EIS_exp.f)
         actual_error = fitnessFunction(EIS_simulation(), EIS_EEC, EIS_exp, error_type=error_type)
@@ -1054,6 +920,7 @@ function run_EEC_fitting(;
         if actual_error < best_error
           best_error = actual_error
           best_prms_values = deepcopy(EEC_actual.prms_values)
+          best_standard_deviations = deepcopy(EEC_actual.standard_deviations)
           best_init_values_idx = init_values_idx
         end
         
@@ -1081,6 +948,8 @@ function run_EEC_fitting(;
       ProgressMeter.update!(progress_meter, cycle_number_for_progressbar)
     end    
     
+    isempty(best_prms_values) && throw(ErrorException("all initial guesses failed"))
+    EEC_actual.standard_deviations = best_standard_deviations
     EEC_actual.prms_values .= best_prms_values
     if !save_file_bool   
       if show_all_initial_guesses
@@ -1245,7 +1114,7 @@ function load_EEC_data_holder(;folder="../data/EEC/", file_name="default.txt")
       elseif typeof(token) <: Number
       
       else        
-        token = parse(Float32, token)
+        token = parse(Float64, token)
       end
       EEC_data_holder.data[TC_idx, pO2_idx, bias_idx, data_set_idx, prm_name_idx] = token
     end
@@ -1306,27 +1175,11 @@ function plot_EEC_data_general(EEC_data_holder;
     end
   end
     
-  if y_name == "C3&C4"    
-    plot_template = "1.0/(1/C3 + 1/ C4)"
-  elseif (length(y_name) >= 5) && (y_name[1:5] == "(CPE)")
-    if y_name[6:end] == "C3"          
-      plot_template = "((C3*R3)^(1.0/alpha3))/R3"
-    end
-    if y_name[6:end] == "C4"          
-      plot_template = "((C4*R4)^(1.0/alpha4))/R4"
-    end
-    if y_name[6:end] == "C3&C4"          
-      plot_template = "1.0  /  (1/(((C3*R3)^(1.0/alpha3))/R3)   +    1/(((C4*R4)^(1.0/alpha4))/R4))"
-    end
-  elseif (length(y_name) >= 8) && (y_name[1:8] == "(CPEsin)")
-    if y_name[9:end] == "C3"          
-      plot_template = "(((C3*R3)^(1.0/alpha3))/R3 )*sin(alpha3*pi/2)"
-    end
-  else
-    plot_template = y_name
+  if startswith(y_name,"(CPE")
+    throw(ArgumentError("CPE conversion needs the circuit convention; provide an explicit y_name expression"))
   end
-  
-  
+  plot_template = y_name=="C3&C4" ? "1.0/(1/C3+1/C4)" : y_name
+
   range_list[1] = make_range_list("TC", TC_interval)
   range_list[2] = make_range_list("pO2", pO2_interval)
   range_list[3] = make_range_list("bias", bias_interval)
@@ -1414,7 +1267,7 @@ function plot_EEC_data_general(EEC_data_holder;
     legend(loc="best")
   end
 
-  PyPlot.show()
+  _py(:show)
   return y_to_plot
 end
 
@@ -1466,8 +1319,8 @@ function get_joint_EEC_data_via_bias(EEC_data_1, EEC_data_2)
     
     return EEC_data_OUT
   else
-    prinltn("ERROR: meta_data are not the same!")
-    return throw(Exception)
+    println("ERROR: meta_data are not the same!")
+    return throw(ArgumentError("invalid input; see preceding message"))
   end
 end
   
@@ -1491,6 +1344,7 @@ function display_fit_vs_exp(EEC_data_holder;TC, pO2, bias, data_set,
     EIS_exp = ElChemTools.import_data_to_DataFrame(SIM)    
     
     EIS_exp = EIS_preprocessing(EIS_exp, EIS_preprocessing_control)
+    nrow(EIS_exp)>=3 || throw(ArgumentError("at least three EIS points required for batch fitting"))
     typical_plot_exp(SIM, EIS_exp)
     
     
@@ -1526,54 +1380,6 @@ function display_fit_vs_exp(EEC_data_holder;TC, pO2, bias, data_set,
   end  
 end
   
-
-function model_R1_from_TC(x, TC)
-  return x[1]*exp((x[2]* e0)/(kB*TCtoT(TC)))
-end
-
-function model_TC_from_R1(x, R1)
-  return TtoTC((x[2]/R)*(1/log(R1/x[1])))
-end
-
-function findfit_from_for_R(TC_data, R1_data)
-  function to_optimize(x)
-    error = 0
-    for (i, TC) in enumerate(TC_data)
-      error += (R1_data[i] - model_R1_from_TC(x, TC))^2
-    end
-    return sqrt(error)/length(TC_data)
-  end
-  
-  
-  
-  fit_O = optimize(to_optimize, [1., 1.])
-  
-  R1_fitted_values = []
-  TC_plot_range = 700 : 10 : 850
-  for TC in TC_plot_range
-    append!(R1_fitted_values, model_R1_from_TC(fit_O.minimizer, TC))
-  end
-  
-  plot(TC_data, R1_data)
-  plot(TC_plot_range, R1_fitted_values)
-  return fit_O
-end
-
-
-
-#############
-#############
-#############
-
-function get_computed_data_MONO_110()
-  cdm = load_EEC_data_holder(folder="../data/EEC/", file_name="computed_data_minus_pO2.txt")
-  cdp = load_EEC_data_holder(folder="../data/EEC/", file_name="computed_data_plus_pO2.txt")
-  return get_joint_EEC_data_via_bias(cdm, cdp)
-end
-
-function test_R3_stealing()
-  println("TODO!!!")
-end
 
 function get_bias_from_chrono(bias_idx, bias_step, bias_return_value; num_cycles=1, take_each=1)
     bias_digit_precision = 3

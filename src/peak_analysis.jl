@@ -90,7 +90,7 @@ function find_divisions_maximum(h_tau)
 
     if length(div_idxs) < 2
         println("ERROR: div_idxs < 2")
-        return throw(Exception)
+        return throw(ArgumentError("invalid input; see preceding message"))
     end
 
     div_idxs = [1, div_idxs[2:end-1]..., length(h_tau)]
@@ -99,8 +99,10 @@ function find_divisions_maximum(h_tau)
 end
 
 function my_2nd_der(a)
+    length(a) < 3 && return zeros(length(a))
     res = my_deriv(my_deriv(a))
-    res = [res[1]/2.0, res..., res[2]/2.0]
+    length(a) < 3 && return zeros(length(a))
+    res = [res[1]/2.0, res..., res[end]/2.0]
     res = map(x -> ( abs(x) < 1.0e-10 ? 0.0 : x), res)
     return res
 end
@@ -209,7 +211,7 @@ function find_peak_idxs(ddht, l_idx, r_idx)
     #@show peak_idxs
     if length(peak_idxs) == 0
         println("ERROR: peak_idxs $(peak_idxs) do not exist")
-        return throw(Exception)
+        return throw(ArgumentError("invalid input; see preceding message"))
     end
     return peak_idxs
 end
@@ -222,7 +224,7 @@ function change_prms_of_peak(gf, prms, peak)
     npp = num_of_prms_per_peak(gf) 
     if peak > gf.num_peaks
         println("ERROR: peak $(peak) > num_peaks $(gf.num_peaks)")
-        throw(Exception)
+        throw(ArgumentError("invalid input; see preceding message"))
     end
     gf.prms[Int64.((peak -1)*npp + 1 : peak*npp)] = prms
 end
@@ -364,7 +366,7 @@ function get_Rt_info(gf::gaussian_fit_struct)
             sum_on_x += peaks_funcs[peak_num][x]
         end
         for peak_num in 1:gf.num_peaks
-            peak_Rs[peak_num] += gf.ydata[x] * (peaks_funcs[peak_num][x]/sum_on_x)
+            peak_Rs[peak_num] += gf.ydata[x] * ((sum_on_x > 0 ? peaks_funcs[peak_num][x]/sum_on_x : 1/gf.num_peaks))
         end
     end
 
@@ -497,7 +499,7 @@ end
 function obtain_summed_peaks(tau, h_tau, division_idxs, control::DRT_control_struct=DRT_control_struct())
     peak_list = []
     for i in 1:length(division_idxs)-1
-        R = discrete_integrate(division_idxs[i], division_idxs[i+1] - 1, h_tau)
+        R = discrete_integrate(division_idxs[i], i == length(division_idxs)-1 ? division_idxs[i+1] : division_idxs[i+1]-1, h_tau)
         h_max = -1.0
         f_max = -1.0
         for i in division_idxs[i] : division_idxs[i+1]
@@ -513,17 +515,17 @@ end
 
 function divide_and_evaluate_R_peaks(DRT::DRT_struct)
     overall_threshold = maximum(DRT.h)*1e-5
-    ht_cr, t_cr = crop_to_true_DRT(DRT, overall_threshold)
-    threshold = maximum(ht_cr)/10000.0
+    ht_cr, t_cr = DRT.control.crop_artifacts ? crop_to_true_DRT(DRT, overall_threshold) : (copy(DRT.h),copy(DRT.tau_range))
     
-    if length(ht_cr) < 1
+    if isempty(ht_cr) || maximum(ht_cr) <= 0
         DRT.R_peak_list = []
         return 
     end
 
+    threshold = maximum(ht_cr)/10000.0
     plot_bool = DRT.control.R_peaks_plot_bool
     if plot_bool
-        act_fig = PyPlot.gcf()
+        act_fig = _py(:gcf)
         figure(11)
     end
     
@@ -536,7 +538,7 @@ function divide_and_evaluate_R_peaks(DRT::DRT_struct)
         #division_idxs = find_divisions_maximum(ht_cr)
     else
         println("ERROR: divide_R_peaks-division = \"$(DRT.control.divide_R_peaks)\", which is not a valid option!")
-        throw(Exception)
+        throw(ArgumentError("invalid input; see preceding message"))
     end
 
     plot_bool && plot_divisions(ht_cr, division_idxs)
@@ -547,10 +549,9 @@ function divide_and_evaluate_R_peaks(DRT::DRT_struct)
         DRT.R_peak_list = obtain_summed_peaks(t_cr, ht_cr, division_idxs, DRT.control)
     else
         println("ERROR: divide_R_peaks-method = \"$(DRT.control.divide_R_peaks)\", which is not a valid option!")
-        throw(Exception)
+        throw(ArgumentError("invalid input; see preceding message"))
     end
 
     plot_bool && figure(act_fig)
     return
 end
-  

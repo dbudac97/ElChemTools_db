@@ -1,5 +1,5 @@
 using Printf
-using PyPlot
+
 #using Plots
 using DataFrames
 #using LeastSquaresOptim
@@ -16,17 +16,18 @@ using Base: @kwdef
 const DRT_standard_figure = 33
 
 @kwdef mutable struct DRT_control_struct
-  lambda::Float32=0.0
-  tau_min_fac::Float32=1.0
-  tau_max_fac::Float32=1.0
-  tau_range_fac::Float32=1.0
-  peak_merge_tol::Float32=0.0
+  lambda::Float64=0.0
+  tau_min_fac::Float64=1.0
+  tau_max_fac::Float64=1.0
+  tau_range_fac::Float64=1.0
+  peak_merge_tol::Float64=0.0
   specified_f_range = Nothing
   k_Gold::Int64=10000
   alg::String="Tikhonov"
   divide_R_peaks::String=""
   R_peaks_plot_bool::Bool=false
   export_in_f::Bool=false
+  crop_artifacts::Bool=false
 end
 
 mutable struct DRT_struct
@@ -89,6 +90,9 @@ function evaluate_RC_peaks_from_DRT(DRT::DRT_struct)
     end
   end
   
+  if nrow(temp_peak_df) > 0
+    push!(peaks, peak_assesement(temp_peak_df))
+  end
   DRT.peaks_df = peaks
   return
 end
@@ -162,7 +166,7 @@ function plot_DRT_Rtau(DRT::DRT_struct, to_standard_figure=true, print_bool=fals
   xlim(log10.([DRT.tau_range[1], DRT.tau_range[end]])...)
   
   
-  previos_maximum = (PyPlot.gca()).get_ylim()[2]
+  previos_maximum = (_py(:gca)).get_ylim()[2]
   
   ylim(0, max(
     (length(peaks_df.R) > 0 ? maximum(peaks_df.R)*1.1 : 0.0001), 
@@ -193,12 +197,10 @@ function plot_DRT_Rf(DRT::DRT_struct, to_standard_figure=true, print_bool=false)
 end
 
 
-function get_expspace(A, B, n)
-  res = []
-  for i in 1:n
-    append!(res, A*((Float64(B)/A)^((i - 1)/(n - 1))))
-  end
-  res
+function get_expspace(A,B,n)
+  isfinite(A) && isfinite(B) && 0 < A < B || throw(ArgumentError("invalid positive time range"))
+  n >= 2 || throw(ArgumentError("at least two relaxation nodes required"))
+  exp.(range(log(A),log(B);length=round(Int,n)))
 end
 
 function construct_A_matrix_and_b(f_nodes, tau_range, Z, lambda, control)
@@ -265,23 +267,37 @@ function construct_A_matrix_and_b(f_nodes, tau_range, Z, lambda, control)
 end
 
 
-function Gold_solve(A, b, k)
-  x1 = Vector{Float64}(undef, size(A, 2))
-  x1 .= 1.0
-  #
-  AT = transpose(A)
-  Z_part = AT*b
-  #
-  i = 1
-  while i <= k
-    denominator = (AT*A*x1)
-    x1 .= x1 .* Z_part./denominator
-    i += 1
+function Gold_solve(A,b,k)
+  k > 0 || throw(ArgumentError("Gold iterations must be positive"))
+  all(A .>= 0) && all(b .>= 0) || throw(ArgumentError("Gold requires nonnegative kernel and data; remove inductive data first"))
+  H=transpose(A)*A
+  q=transpose(A)*b
+  x=ones(size(A,2))
+  denom=similar(x)
+  for _ in 1:k
+    mul!(denom,H,x)
+    for i in eachindex(x)
+      x[i] = denom[i] > 0 ? x[i]*q[i]/denom[i] : 0.0
+    end
   end
-  return x1
+  x
+end
+
+function _scaled_nnls(A,b)
+  scales=max.(sqrt.(vec(sum(abs2,A;dims=1))),eps(Float64))
+  nonneg_lsq(A ./ transpose(scales),b;alg=:nnls)./scales
 end
 
 function get_DRT(EIS_df::DataFrame, control::DRT_control_struct, debug_mode=false)
+  validate_eis(EIS_df)
+  nrow(EIS_df) >= 3 || throw(ArgumentError("DRT needs at least three frequencies"))
+  control.alg in ("Tikhonov","Gold") || throw(ArgumentError("unknown DRT algorithm"))
+  all(x -> isfinite(x) && x > 0, (control.tau_min_fac,control.tau_max_fac,control.tau_range_fac)) || throw(ArgumentError("invalid DRT grid factors"))
+  isfinite(control.lambda) && control.lambda >= 0 || throw(ArgumentError("lambda must be nonnegative"))
+  if control.alg == "Gold"
+    control.k_Gold > 0 || throw(ArgumentError("Gold iterations must be positive"))
+    control.lambda == 0 || throw(ArgumentError("Gold does not accept lambda"))
+  end
   #println(control.lambda)
   #@show tau_max_fac
   tau_min = 1.0/(2*pi*maximum(EIS_df.f)) / control.tau_min_fac
@@ -293,35 +309,17 @@ function get_DRT(EIS_df::DataFrame, control::DRT_control_struct, debug_mode=fals
   
  # @show A b
   if control.alg == "Tikhonov"
-    solution= nonneg_lsq(A, b; alg=:nnls)
+    solution= _scaled_nnls(A,b)
   elseif control.alg == "Gold"
     if control.lambda != 0.0
       println("ERROR: when using alg=\"Gold\", lambda must be set to 0.0")
-      return throw(Exception)
+      return throw(ArgumentError("invalid input; see preceding message"))
     end
     solution = Gold_solve(A, b, control.k_Gold)
   else
     println("ERROR: DRT >>> wrong algoritm chosen: $(control.alg)")
-    throw(Exception)
+    throw(ArgumentError("invalid input; see preceding message"))
   end
-
-  if control.alg == "Tikhonov" && solution[1] > 0.000001
-    println(" !!!!!!!!!!!!!!!!!!!!!!!  Low frequency adjustment ---------------------- ")
-    R_ohm_estimate = solution[N_tau + 1] + solution[1]
-  
-    next_row = zeros(N_tau + 2)
-    next_row[N_tau + 1] = 1
-    A = [A; transpose(next_row)]
-    b = [b; R_ohm_estimate]
-    
-    solution= nonneg_lsq(A, b; alg=:nnls)   
-  end
-  
-#   @show solution
-#   
-#   @show A \ b
-#   @show A
-#   @show norm(A*solution - b)
   
   # reconstructin EIS from DRT
   # getting rid of the corner effects
@@ -367,29 +365,17 @@ function get_DRT(EIS_df::DataFrame, control::DRT_control_struct, debug_mode=fals
 
   # the following do NOT change DRT function, only changes peaks_df
   if control.peak_merge_tol > 0.0
-    work_to_be_done = true
-    new_loop = false
-    while work_to_be_done || new_loop
-      previous_peak_R = 0
-      previous_peak_tau = 10.0^(-20)
-      new_loop = false
-      for (i, tau) in enumerate(DRT_out.peaks_df.tau_c)
-        if abs(log10(previous_peak_tau) - log10(tau)) < control.peak_merge_tol
-          
-          #
-          DRT_out.peaks_df.tau_c[i-1] = 10^((log10(DRT_out.peaks_df.tau_c[i-1] * DRT_out.peaks_df.tau_c[i]))/2)
-          DRT_out.peaks_df.R[i-1] += DRT_out.peaks_df.R[i]
-          DRT_out.peaks_df.C[i-1] = DRT_out.peaks_df.tau_c[i-1]/DRT_out.peaks_df.R[i-1]
-          delete!(DRT_out.peaks_df, i)
-          #
-          
-          new_loop = true
-        else
-          previous_peak_tau = tau
-          previous_peak_R = DRT_out.peaks_df.R[i]
-        end
+    i = 2
+    peaks = DRT_out.peaks_df
+    while i <= nrow(peaks)
+      if abs(log10(peaks.tau_c[i]/peaks.tau_c[i-1])) < control.peak_merge_tol
+        R = peaks.R[i-1]+peaks.R[i]
+        tau = (peaks.R[i-1]*peaks.tau_c[i-1]+peaks.R[i]*peaks.tau_c[i])/R
+        peaks.R[i-1]=R; peaks.tau_c[i-1]=tau; peaks.C[i-1]=tau/R
+        deleteat!(peaks,i)
+      else
+        i += 1
       end
-      work_to_be_done = false
     end
   end
   
@@ -401,7 +387,7 @@ end
 function EIS_get_RC_CPE_elements(R1, C1, R2, C2, alpha, Rohm=0; f_range=Nothing)
   EIS_RC = DataFrame( f = [], Z = [])
   if f_range==Nothing
-    checknodes = get_shared_checknodes(EIS_simulation(800,100,0.0)...)
+    checknodes = EIS_get_checknodes_geometrical(EIS_get_shared_f_range()...)
   else
     checknodes = EIS_get_checknodes_geometrical(f_range...)
   end
